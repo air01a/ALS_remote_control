@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Zoom</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+    <script src="script.js"></script>
+    <script>
+        setInterval(refreshImage, ##PERIOD##);
+        function refreshImage(){
+            var timestamp = new Date().getTime();
+            var el = document.getElementById("web_image");
+            var queryString = "?t=" + timestamp;
+            el.src = "/web_image.jpg" + queryString;
+        }
+    </script>
+</head>
+<body style="background: black">
+    <div class="image-container">
+        <img class="zoomable-image" src="image.jpg" id="web_image" alt="Zoomable Image">
+    </div>
+    <button class="zoom-button">Zoom</button>
+    <div class="menu-container">
+        <label for="zoom-range">Zoom Level:</label>
+        <input type="range" id="zoom-range" min="0.5" max="3" step="0.1" value="1">
+    </div>
+</body>
+</html>

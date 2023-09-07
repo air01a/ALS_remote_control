@@ -1,0 +1,782 @@
+# !/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+# ALS - Astro Live Stacker
+# Copyright (C) 2019  Sébastien Durand (Dragonlost) - Gilles Le Maréchal (Gehelem)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""
+Module holding all application logic
+"""
+import time
+from logging import getLogger
+from pathlib import Path
+from typing import List
+
+from PyQt5.QtCore import QFile, QT_TRANSLATE_NOOP, QCoreApplication, QThread, QTimer
+
+from als import config
+from als.code_utilities import log, AlsException, SignalingQueue, get_text_content_of_resource, get_timestamp, \
+    available_memory, AlsLogAdapter
+from als.io.input import InputScanner, ScannerStartError
+from als.io.network import get_ip, WebServer, SocketController
+from als.io.output import ImageSaver
+from als.messaging import MESSAGE_HUB
+from als.model.base import Image, Session, VisualProfile, PhotoProfile
+from als.model.data import (
+    DYNAMIC_DATA,
+    I18n, STACKED_IMAGE_FILE_NAME_BASE,
+    IMAGE_SAVE_TYPE_JPEG, WEB_SERVED_IMAGE_FILE_NAME_BASE
+)
+from als.model.params import ProcessingParameter
+from als.processing import Pipeline, Debayer, Standardize, ConvertForOutput, Levels, ColorBalance, AutoStretch, \
+    HotPixelRemover, RemoveDark, FileReader, HistogramComputer, QImageGenerator
+from als.stack import Stacker
+
+_LOGGER = AlsLogAdapter(getLogger(__name__), {})
+
+
+class SessionError(AlsException):
+    """
+    Class for all errors related to session management
+    """
+
+
+class CriticalFolderMissing(SessionError):
+    """Raised when a critical folder is missing"""
+
+
+class WebServerFailedToStart(AlsException):
+    """Raised when web server fails"""
+
+
+class WebServerOnLoopback(Exception):
+    """Raised when we can listen on loopback only"""
+
+
+# pylint: disable=R0902, R0904
+class Controller:
+    """
+    The application controller, in charge of implementing application logic
+    """
+
+    EAA_PROFILE = 0
+    PHOTO_PROFILE = 1
+
+    profiles = {
+
+        EAA_PROFILE: VisualProfile(),
+        PHOTO_PROFILE: PhotoProfile()
+    }
+
+    @log
+    def __init__(self):
+
+        DYNAMIC_DATA.session.set_status(Session.stopped)
+        DYNAMIC_DATA.web_server_is_running = False
+        self._save_every_image = False
+
+        DYNAMIC_DATA.pre_processor_busy = False
+        DYNAMIC_DATA.stacker_busy = False
+        DYNAMIC_DATA.post_processor_busy = False
+        DYNAMIC_DATA.saver_busy = False
+
+        DYNAMIC_DATA.last_timing = 0
+
+        self._input_scanner: InputScanner = InputScanner.create_scanner()
+
+        profile_code = config.get_profile()
+        self._profile = Controller.profiles[profile_code]
+        _LOGGER.debug(f"*SD-PROFILE* Using running profile: {profile_code}")
+
+        self._pre_process_queue: SignalingQueue = DYNAMIC_DATA.pre_process_queue
+        self._pre_process_pipeline: Pipeline = Pipeline(
+            'pre-process',
+            self._pre_process_queue,
+            [FileReader(self._profile), RemoveDark(), HotPixelRemover(), Debayer(), Standardize()])
+        self._pre_process_pipeline.start(self._profile.get_pre_process_priority)
+
+        self._stacker_queue: SignalingQueue = DYNAMIC_DATA.stacker_queue
+        self._stacker: Stacker = Stacker(self._stacker_queue, self._profile)
+        self._stacker.stacking_mode = I18n.STACKING_MODE_MEAN
+        self._stacker.align_before_stack = True
+        self._stacker.start(self._profile.get_stacking_priority)
+
+        self._post_process_queue = DYNAMIC_DATA.process_queue
+        self._post_process_pipeline: Pipeline = Pipeline(
+            'post-process',
+            self._post_process_queue,
+            [ConvertForOutput(), HistogramComputer(), QImageGenerator()])
+        self._rgb_processor = ColorBalance()
+        self._autostretch_processor = AutoStretch()
+        self._levels_processor = Levels()
+        self._post_process_pipeline.add_process(self._autostretch_processor)
+        self._post_process_pipeline.add_process(self._levels_processor)
+        self._post_process_pipeline.add_process(self._rgb_processor)
+        self._post_process_pipeline.start(self._profile.get_post_process_priority)
+
+        self._saver_queue = DYNAMIC_DATA.save_queue
+        self._saver = ImageSaver(self._saver_queue)
+        self._saver.start(QThread.LowPriority)
+
+        self._last_stacking_result = None
+        self._web_server = None
+
+        self._model_observers = list()
+        self._image_timings = dict()
+
+        self._input_scanner.new_image_path_signal[str].connect(self.on_new_image_path)
+        self._pre_process_pipeline.new_result_signal[Image].connect(self.on_new_pre_processed_image)
+        self._stacker.stack_size_changed_signal[int].connect(self.on_stack_size_changed)
+        self._stacker.new_result_signal[Image].connect(self.on_new_stack_result)
+        self._post_process_pipeline.new_result_signal[Image].connect(self.on_new_post_processor_result)
+
+        self._pre_process_queue.size_changed_signal[int].connect(self.on_pre_process_queue_size_changed)
+        self._stacker_queue.size_changed_signal[int].connect(self.on_stacker_queue_size_changed)
+        self._post_process_queue.size_changed_signal[int].connect(self.on_post_processor_queue_size_changed)
+        self._saver_queue.size_changed_signal[int].connect(self.on_saver_queue_size_changed)
+
+        self._pre_process_pipeline.busy_signal.connect(self.on_pre_processor_busy)
+        self._pre_process_pipeline.waiting_signal.connect(self.on_pre_processor_waiting)
+        self._stacker.busy_signal.connect(self.on_stacker_busy)
+        self._stacker.waiting_signal.connect(self.on_stacker_waiting)
+        self._post_process_pipeline.busy_signal.connect(self.on_post_processor_busy)
+        self._post_process_pipeline.waiting_signal.connect(self.on_post_processor_waiting)
+        self._saver.busy_signal.connect(self.on_saver_busy)
+        self._saver.waiting_signal.connect(self.on_saver_waiting)
+
+        DYNAMIC_DATA.session.status_changed_signal.connect(self._notify_model_observers)
+
+        self._metrics_timer = QTimer()
+        self._metrics_timer.setInterval(2000)
+        self._metrics_timer.timeout.connect(self.collect_metrics)
+        self._metrics_timer.start()
+
+
+        callbacks={'start_session':self.cb_start_session,
+                   'stop_session':self.cb_stop_session,
+                   'change_scan_folder':self.cb_change_scan_folder,
+                   'change_autostretch':self.cb_change_autostretch,
+                   'get_total_queues':self.cb_get_total_queues,
+                   'queues_empty':self.cb_are_queues_empty,
+                   'save_image':self.cb_save_image}
+        
+        self.websocket = SocketController('',13000,callbacks)
+
+
+    @log
+    def cb_start_session(self, var):
+        _LOGGER.debug(f"Remote start session")
+        self.start_session()
+        return 0
+    
+    @log
+    def cb_stop_session(self, var):
+        _LOGGER.debug(f"Remote stop session")
+        self.stop_session()
+        return 0
+    @log
+    def cb_change_scan_folder(self,var):
+        _LOGGER.debug(f"Remote change folder_path")
+        config.set_scan_folder_path(var[0])
+        return 0
+    
+    @log
+    def cb_change_autostretch(self,var):
+        _LOGGER.debug(f"Remote change autostretch")
+        params = self._autostretch_processor.get_parameters()
+        if var[0]=='1':
+            params[0].value=True
+        else:
+            params[0].value=False
+        if float(var[1]):
+            params[1].value=float(var[1])
+        return 0    
+    
+    @log
+    def cb_save_image(self,var):
+        _LOGGER.debug(f"Remote save image")
+        self.save_post_process_result(self, final=True)
+        return 0    
+
+    @log
+    def cb_get_total_queues(self,var):
+        return self._pre_process_queue.qsize + self._stacker_queue.qsize+self._post_process_queue.qsize
+
+    
+    @log
+    def cb_are_queues_empty(self,var):
+        return self._pre_process_queue.empty() and self._stacker_queue.empty() and self._post_process_queue.empty()
+
+    @log
+    def collect_metrics(self):
+        _LOGGER.debug(f"*SM-MEM* Available memory (byte): {available_memory()}")
+
+    @log
+    def get_autostretch_parameters(self) -> List[ProcessingParameter]:
+        """
+        Retrieves autostretch parameters
+
+        :return: autostretch parameters
+        """
+        return self._autostretch_processor.get_parameters()
+
+    @log
+    def get_rgb_parameters(self) -> List[ProcessingParameter]:
+        """
+        Retrieves rgb parameters
+
+        :return: rgb parameters
+        """
+        return self._rgb_processor.get_parameters()
+
+    @log
+    def get_levels_parameters(self) -> List[ProcessingParameter]:
+        """
+        Retrieves Levels processor parameters
+
+        :return: Levels processor parameters
+        """
+        return self._levels_processor.get_parameters()
+
+    @log
+    def remove_model_observer(self, observer):
+        """
+        Removes observer from our observers list.
+
+        :param observer: the observer to remove
+        :type observer: any
+        """
+        if observer in self._model_observers:
+            self._model_observers.remove(observer)
+
+    @log
+    def _notify_model_observers(self, image_only=False):
+        """
+        Tells all registered observers to update their display
+        """
+        for observer in self._model_observers:
+            observer.update_display(image_only)
+
+    @log
+    def add_model_observer(self, observer):
+        """
+        Adds an observer to our observers list.
+
+        :param observer: the new observer
+        :type observer: any
+        """
+        self._model_observers.append(observer)
+
+    @log
+    def apply_processing(self):
+        """
+        Apply processing on last stacking result
+        """
+        if self._stacker.size > 0 and DYNAMIC_DATA.process_queue.qsize() == 0:
+
+            # don't consider this new processing result for image timing
+            image_to_process = self._last_stacking_result.clone(keep_ref_to_data=True)
+            image_to_process.ticket = "ALZ"
+            DYNAMIC_DATA.process_queue.put(image_to_process)
+
+    @log
+    def get_save_every_image(self) -> bool:
+        """
+        Retrieves the flag that tells if we need to save every process result image
+
+        :return: the flag that tells if we need to save every process result image
+        :rtype: bool
+        """
+        return self._save_every_image
+
+    @log
+    def set_save_every_image(self, save_every_image: bool):
+        """
+        Sets the flag that tells if we need to save every process result image
+
+        :param save_every_image: flag that tells if we need to save every process result image
+        :type save_every_image: bool
+        """
+        self._save_every_image = save_every_image
+
+    @log
+    def get_align_before_stack(self) -> bool:
+        """
+        Gets "align before stack" switch
+
+        :return: Do we align before stacking ?
+        :rtype: bool
+        """
+        return self._stacker.align_before_stack
+
+    @log
+    def set_align_before_stack(self, align: bool):
+        """
+        Sets "align before stack" switch
+
+        :param align: Do we align before stacking ?
+        :type align: bool
+        """
+        self._stacker.align_before_stack = align
+
+    @log
+    def get_stacking_mode(self):
+        """
+        Gets current stacking mode
+
+        :return: the stacking mode
+        :rtype: str
+        """
+        return self._stacker.stacking_mode
+
+    @log
+    def set_stacking_mode(self, mode):
+        """
+        Sets current stacking mode
+
+        :param mode: stacking mode
+        :type mode: str
+        """
+        self._stacker.stacking_mode = mode
+
+    @log
+    def on_stack_size_changed(self, size):
+        """
+        Stack size just changed
+
+        :param size: the stack size
+        :type size: int
+        """
+        DYNAMIC_DATA.stack_size = size
+        self._notify_model_observers()
+
+    @log
+    def on_new_post_processor_result(self, image: Image):
+        """
+        A new image processing result is here
+
+        :param image: the new processing result
+        :type image: Image
+        """
+
+        if image.ticket in self._image_timings.keys():
+            delta = round(time.time() - self._image_timings[image.ticket], 3)
+
+            _LOGGER.debug(f"*SD-FRMTIME* Total frame processing time: {delta}")
+            message = QT_TRANSLATE_NOOP("", "* Full processing time for '{}' : {} s")
+            DYNAMIC_DATA.last_timing = delta
+            MESSAGE_HUB.dispatch_info(__name__, message, [image.ticket, delta])
+
+        image.origin = "Process result"
+        DYNAMIC_DATA.post_processor_result = image
+        self._notify_model_observers(image_only=True)
+        self.save_post_process_result()
+
+    @log
+    def on_new_stack_result(self, image: Image):
+        """
+        A new image has been stacked
+
+        :param image: the result of the stack
+        :type image: Image
+        """
+        image.origin = "Stacking result"
+        self._last_stacking_result = image
+
+        if image.exposure_time != Image.UNDEF_EXP_TIME:
+            DYNAMIC_DATA.total_exposure_time += image.exposure_time
+
+        self.purge_queue(self._post_process_queue)
+        self._post_process_queue.put(image)
+
+    @log
+    def on_new_image_path(self, image_path: str):
+        """
+        A new image as been detected by input scanner
+
+        :param image_path: the new image path
+        :type image_path: str
+        """
+        self._image_timings[image_path] = time.time()
+        self._pre_process_queue.put(image_path)
+
+    @log
+    def on_new_pre_processed_image(self, image: Image):
+        """
+        A new image as been pre-processed
+
+        :param image: the image
+        :type image: Image
+        """
+        self._stacker_queue.put(image)
+
+    @log
+    def on_pre_process_queue_size_changed(self, new_size):
+        """
+        Qt slot executed when an item has just been pushed to the pre-processor queue
+
+        :param new_size: new queue size
+        :type new_size: int
+        """
+        _LOGGER.debug(f"*SD-Q-PRE* New pre-processor queue size: {new_size}")
+        self._notify_model_observers()
+
+    @log
+    def on_stacker_queue_size_changed(self, new_size):
+        """
+        Qt slot executed when an item has just been pushed to the stacker queue
+
+        :param new_size: new queue size
+        :type new_size: int
+        """
+        _LOGGER.debug(f"*SD-Q-STA* New stacker queue size : {new_size}")
+        self._notify_model_observers()
+
+    @log
+    def on_post_processor_queue_size_changed(self, new_size):
+        """
+        Qt slot executed when an item has just been pushed to the process queue
+
+        :param new_size: new queue size
+        :type new_size: int
+        """
+        _LOGGER.debug(f"*SD-Q-POST* New post-processor queue size: {new_size}")
+        self._notify_model_observers()
+
+    @log
+    def on_saver_queue_size_changed(self, new_size):
+        """
+        Qt slot executed when an item has just been pushed to the save queue
+
+        :param new_size: new queue size
+        :type new_size: int
+        """
+        _LOGGER.debug(f"*SD-Q-SAV* New saver queue size : {new_size}")
+        self._notify_model_observers()
+
+    @log
+    def on_pre_processor_busy(self):
+        """
+        pre-processor just started working on new image
+        """
+        DYNAMIC_DATA.pre_processor_busy = True
+        self._notify_model_observers()
+
+    @log
+    def on_pre_processor_waiting(self):
+        """
+        pre-processor just finished working on new image
+        """
+        DYNAMIC_DATA.pre_processor_busy = False
+        self._notify_model_observers()
+
+    @log
+    def on_stacker_busy(self):
+        """
+        stacker just started working on new image
+        """
+        DYNAMIC_DATA.stacker_busy = True
+        self._notify_model_observers()
+
+    @log
+    def on_stacker_waiting(self):
+        """
+        stacker just finished working on new image
+        """
+        DYNAMIC_DATA.stacker_busy = False
+        self._notify_model_observers()
+
+    @log
+    def on_post_processor_busy(self):
+        """
+        post-processor just started working on new image
+        """
+        DYNAMIC_DATA.post_processor_busy = True
+        self._notify_model_observers()
+
+    @log
+    def on_post_processor_waiting(self):
+        """
+        post-processor just finished working on new image
+        """
+        DYNAMIC_DATA.post_processor_busy = False
+        self._notify_model_observers()
+
+    @log
+    def on_saver_busy(self):
+        """
+        saver just started working on new image
+        """
+        DYNAMIC_DATA.saver_busy = True
+        self._notify_model_observers()
+
+    @log
+    def on_saver_waiting(self):
+        """
+        saver just finished working on new image
+        """
+        DYNAMIC_DATA.saver_busy = False
+        self._notify_model_observers()
+
+    @log
+    def start_session(self):
+        """
+        Starts session
+        """
+        try:
+            if DYNAMIC_DATA.session.is_stopped:
+
+                MESSAGE_HUB.dispatch_info(__name__, QT_TRANSLATE_NOOP("", "Starting new session..."))
+
+                DYNAMIC_DATA.has_new_warnings = False
+                self._stacker.reset()
+                self._image_timings.clear()
+                DYNAMIC_DATA.last_timing = 0
+                DYNAMIC_DATA.total_exposure_time = 0
+
+                # checking presence of critical folders
+                critical_folders_dict = {
+                    "scan": config.get_scan_folder_path(),
+                    "work": config.get_work_folder_path(),
+                    "web":  config.get_web_folder_path(),
+                }
+
+                for role, path in critical_folders_dict.items():
+                    if not Path(path).is_dir():
+                        title = QT_TRANSLATE_NOOP("", "Missing critical folder")
+                        message = QT_TRANSLATE_NOOP("", "Your currently configured {} folder {} is missing.")
+                        raise CriticalFolderMissing(
+                            QCoreApplication.translate("", title),
+                            QCoreApplication.translate("", message).format(*[role, path]))
+
+                # setup web content
+                try:
+                    Controller._setup_web_content()
+                except OSError as os_error:
+                    raise SessionError("Web folder could not be prepared", str(os_error))
+
+            else:
+                # session was paused when this start was ordered. No need for checks & setup
+                MESSAGE_HUB.dispatch_info(__name__, QT_TRANSLATE_NOOP("", "Restarting input scanner ..."))
+
+            # start input scanner
+            try:
+                self._input_scanner.start()
+                MESSAGE_HUB.dispatch_info(__name__, QT_TRANSLATE_NOOP("", "Input scanner started"))
+            except ScannerStartError as scanner_start_error:
+                raise SessionError("Input scanner could not start", scanner_start_error)
+
+            MESSAGE_HUB.dispatch_info(
+                __name__,
+                QT_TRANSLATE_NOOP("", "Session running in mode {} with alignment {}"),
+                [self._stacker.stacking_mode, self._stacker.align_before_stack])
+            DYNAMIC_DATA.session.set_status(Session.running)
+
+        except SessionError as session_error:
+            MESSAGE_HUB.dispatch_error(__name__,
+                                       QT_TRANSLATE_NOOP("", "Session error. {} : {}"),
+                                       [session_error.message, session_error.details])
+            raise
+
+    @log
+    def stop_session(self):
+        """
+        Stops session : stop input scanner and purge input queue
+        """
+        if not DYNAMIC_DATA.session.is_stopped:
+            self._image_timings.clear()
+            DYNAMIC_DATA.session.set_status(Session.stopped)
+            self._stop_input_scanner()
+            Controller.purge_queue(self._pre_process_queue)
+            Controller.purge_queue(self._stacker_queue)
+            Controller.purge_queue(self._post_process_queue)
+            MESSAGE_HUB.dispatch_info(__name__, QT_TRANSLATE_NOOP("", "Session stopped"))
+
+    @log
+    def pause_session(self):
+        """
+        Pauses session : just stop input scanner
+        """
+        if DYNAMIC_DATA.session.is_running:
+            self._stop_input_scanner()
+        MESSAGE_HUB.dispatch_info(__name__, QT_TRANSLATE_NOOP("", "Session paused"))
+        DYNAMIC_DATA.session.set_status(Session.paused)
+
+    @log
+    def start_www(self):
+        """Starts web server"""
+        try:
+            # only setup web content if needed
+            if not all([Path(config.get_web_folder_path()).joinpath(Path(file)).is_file()
+                        for file in ["index.html", "favicon.ico", "web_image.jpg"]]):
+                Controller._setup_web_content()
+
+            web_folder_path = config.get_web_folder_path()
+            ip_address = get_ip()
+            port_number = config.get_www_server_port_number()
+
+            self._web_server = WebServer(web_folder_path)
+            self._web_server.start()
+
+            url = f"http://{ip_address}:{port_number}"
+            MESSAGE_HUB.dispatch_info(__name__, QT_TRANSLATE_NOOP("", "Web server started. Reachable at {}"), [url, ])
+
+            DYNAMIC_DATA.web_server_ip = ip_address
+            DYNAMIC_DATA.web_server_is_running = True
+            self._notify_model_observers()
+
+            # if we can only listen on loopback, keep running but notify the powers that be
+            if ip_address == "127.0.0.1":
+                raise WebServerOnLoopback()
+
+        except OSError as os_error:
+            log_message = QT_TRANSLATE_NOOP("", "Could not start web server : {}")
+            error_title = QCoreApplication.translate("", "Could not start web server")
+            MESSAGE_HUB.dispatch_error(__name__, log_message, [str(os_error), ])
+            raise WebServerFailedToStart(error_title, str(os_error))
+
+    @log
+    def stop_www(self):
+        """Stops web server"""
+
+        if self._web_server and DYNAMIC_DATA.web_server_is_running:
+            self._web_server.stop()
+            self._web_server.join()
+            self._web_server = None
+            MESSAGE_HUB.dispatch_info(__name__, QT_TRANSLATE_NOOP("", "Web server stopped"))
+            DYNAMIC_DATA.web_server_is_running = False
+            self._notify_model_observers()
+
+    @staticmethod
+    @log
+    def purge_queue(queue: SignalingQueue):
+        """
+        Purge a queue
+
+        :param queue: the queue to purge
+        :type queue: SignalingQueue
+        """
+
+        while not queue.empty():
+            queue.get()
+
+    @staticmethod
+    @log
+    def _setup_web_content():
+        """Prepares the work folder."""
+
+        web_folder_path = config.get_web_folder_path()
+
+        index_content = get_text_content_of_resource(":/web/index.html")
+
+        # UI period in sec. <=> JS refresh period in ms.
+        index_content = index_content.replace('##PERIOD##', str(config.get_www_server_refresh_period() * 1000))
+
+        with open(web_folder_path + "/index.html", 'w') as index_file:
+            index_file.write(index_content)
+
+        standby_image_path = Path(web_folder_path) / (WEB_SERVED_IMAGE_FILE_NAME_BASE + '.' + IMAGE_SAVE_TYPE_JPEG)
+        standby_file = QFile(":/web/waiting.jpg")
+        if standby_image_path.is_file():
+            standby_image_path.unlink()
+        standby_file.copy(str(standby_image_path.resolve()))
+        standby_image_path.chmod(0o644)
+
+        favicon_image_path = Path(web_folder_path) / "favicon.ico"
+        standby_file = QFile(":/icons/als_logo.ico")
+        if favicon_image_path.is_file():
+            favicon_image_path.unlink()
+        standby_file.copy(str(favicon_image_path.resolve()))
+        favicon_image_path.chmod(0o644)
+
+    @log
+    def save_post_process_result(self, final=False):
+        """
+        Saves stacking result image to disk
+        """
+
+        # we save the image no matter what, then save a jpg for the web server if it is running
+        image = DYNAMIC_DATA.post_processor_result
+
+        self.save_image(image,
+                        config.get_image_save_format(),
+                        config.get_work_folder_path(),
+                        STACKED_IMAGE_FILE_NAME_BASE + ("_final" if final else ""),
+                        add_timestamp=final)
+
+        if not final:
+            self.save_image(image,
+                            IMAGE_SAVE_TYPE_JPEG,
+                            config.get_web_folder_path(),
+                            WEB_SERVED_IMAGE_FILE_NAME_BASE)
+
+            # if user want to save every image, we save a timestamped version
+            if self._save_every_image:
+                self.save_image(image,
+                                config.get_image_save_format(),
+                                config.get_work_folder_path(),
+                                STACKED_IMAGE_FILE_NAME_BASE,
+                                add_timestamp=True)
+
+    # pylint: disable=R0913
+    @log
+    def save_image(self, image: Image,
+                   file_extension: str,
+                   dest_folder_path: str,
+                   filename_base: str,
+                   add_timestamp: bool = False):
+        """
+        Save an image to disk.
+
+        :param image: the image to save
+        :type image: Image
+        :param file_extension: The image save file format extension
+        :type file_extension: str
+        :param dest_folder_path: The path of the folder image will be saved to
+        :type dest_folder_path: str
+        :param filename_base: The name of the file to save to (without extension)
+        :type filename_base: str
+        :param add_timestamp: Do we add a timestamp to image name
+        :type add_timestamp: bool
+        """
+        if add_timestamp:
+            filename_base += '-' + get_timestamp().replace(' ', "-").replace(":", '-').replace('.', '-')
+
+        image_to_save = image.clone(keep_ref_to_data=True)
+        image_to_save.destination = dest_folder_path + "/" + filename_base + '.' + file_extension
+        self._saver_queue.put(image_to_save)
+
+    @log
+    def shutdown(self):
+        """
+        Proper shutdown of all app components
+        """
+        if not DYNAMIC_DATA.session.is_stopped:
+            self.stop_session()
+
+        if DYNAMIC_DATA.web_server_is_running:
+            self.stop_www()
+
+        self._pre_process_pipeline.stop()
+        self._stacker.stop()
+        self._post_process_pipeline.stop()
+
+        self._saver.stop()
+        self._saver.wait()
+
+    @log
+    def _stop_input_scanner(self):
+        self._input_scanner.stop()
+        MESSAGE_HUB.dispatch_info(__name__, QT_TRANSLATE_NOOP("", "Input scanner stopped"))
