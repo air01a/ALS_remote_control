@@ -5,6 +5,11 @@
 *.log
 /analyzer/csv/
 
+work/
+scan/
+Scripts
+Include/
+share/
 # swap files
 *.swp
 

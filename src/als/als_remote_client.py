@@ -88,7 +88,7 @@ def main():
     if args.host!=None:
         connection_manager.change_host(args.host)
     
-    if args.host!=None:
+    if args.port!=None:
         connection_manager.change_port(args.port)
     
 
