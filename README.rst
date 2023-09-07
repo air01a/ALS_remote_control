@@ -1,7 +1,18 @@
-========================
-ALS - Astro Live Stacker
-========================
+=======================================================
+ALS - Astro Live Stacker MOD easyastro
+=======================================================
 
+Difference with ALS
+====================
+
+I had many troubles to make the python script work with recent version of OS (linux/windows) due to problems with lib compatibility issues.
+So I started to work on this problems. I also wanted to be able to pilot ALS from a external script (mainly for start/stop session) to 
+automatize workflow with N.I.N.A, so I implemented a socket command and a small client. 
+
+As soon as I have time, I will merge this repo with the main ALS repo, but there is quite some problems with the CI to solve before that.
+
+INITIAL
+=======
 Website : https://als-app.org
 
 .. image:: https://img.shields.io/travis/com/gehelem/als/develop
