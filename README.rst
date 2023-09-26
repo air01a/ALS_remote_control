@@ -10,6 +10,7 @@ So I started to work on this problems. I also wanted to be able to pilot ALS fro
 automatize workflow with N.I.N.A, so I implemented a socket command and a small client. 
 
 I also added Wavelet sharpness tool and the possibility to scan existing image on folder when the session start. 
+
 .. image:: als-screenshot2.png
    :align: center
 
