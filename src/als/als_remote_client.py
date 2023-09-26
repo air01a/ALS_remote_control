@@ -7,7 +7,7 @@ import argparse
 class CommandManager():
     def __init__(self, connector):
         self.connector = connector    
-        self.COMMANDS={'start_session':self.basic_command,'stop_session':self.basic_command,'change_scan_folder':self.basic_command,'wait_queue_empty':self.wait_queue_empty_command}
+        self.COMMANDS={'start_session':self.basic_command,'stop_session':self.basic_command,'change_scan_folder':self.basic_command,'wait_queue_empty':self.wait_queue_empty_command,'save_image':self.basic_command}
 
     def basic_command(self, command):
         print("+ Executing %s" % command)

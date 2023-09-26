@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
 
         # update save every frame checkbox
         self._ui.chk_save_every_image.setChecked(self._controller.get_save_every_image())
-
+        self._ui.chk_process_existing.setChecked(self._controller.get_process_existing())
         # prevent log dock to be too tall
         self.resizeDocks([self._ui.log_dock], [MainWindow._LOG_DOCK_INITIAL_HEIGHT], Qt.Vertical)
 
@@ -88,6 +88,37 @@ class MainWindow(QMainWindow):
         )
 
         self._reset_rgb()
+
+
+
+
+        # setup rgb controls and params
+        self._sharpening_controls = [
+            self._ui.chk_sharpen_active,
+            self._ui.sld_sharpen_r1,
+            self._ui.sld_sharpen_a1,
+            self._ui.sld_sharpen_r2,
+            self._ui.sld_sharpen_a2,
+            self._ui.sld_sharpen_r3,
+            self._ui.sld_sharpen_a3,
+            self._ui.sld_sharpen_r4,
+            self._ui.sld_sharpen_a4,
+            self._ui.sld_sharpen_r5,
+            self._ui.sld_sharpen_a5
+        ]
+
+        self._sharpening_controls_parameters = self._controller.get_sharpening_controls_parameters()
+        set_sliders_defaults(
+            [self._sharpening_controls_parameters[1], self._sharpening_controls_parameters[2], self._sharpening_controls_parameters[3],self._sharpening_controls_parameters[4],self._sharpening_controls_parameters[5],self._sharpening_controls_parameters[6],self._sharpening_controls_parameters[7],self._sharpening_controls_parameters[8],self._sharpening_controls_parameters[9],self._sharpening_controls_parameters[10]],
+            [self._ui.sld_sharpen_r1, self._ui.sld_sharpen_a1, self._ui.sld_sharpen_r2, self._ui.sld_sharpen_a1,self._ui.sld_sharpen_r3, self._ui.sld_sharpen_a3,self._ui.sld_sharpen_r4, self._ui.sld_sharpen_a4,self._ui.sld_sharpen_r5, self._ui.sld_sharpen_a5]
+        )
+
+        self._reset_sharpen()
+
+
+
+
+
 
         # setup autostretch controls and params
         self._autostretch_controls = [
@@ -251,6 +282,34 @@ class MainWindow(QMainWindow):
         self._apply_rgb()
 
     @log
+    @pyqtSlot(bool)
+    def on_chk_sharpen_active_clicked(self, checked: bool):
+        """
+        Qt slot executed when RGB 'active' checkbox is clicked
+
+        :param checked: is the box now checked ?
+        :type: bool
+        """
+
+        self._ui.btn_sharpen_reset.setEnabled(checked)
+        self._ui.btn_sharpen_reload.setEnabled(checked)
+        self._ui.btn_sharpen_apply.setEnabled(checked)
+        self._ui.sld_sharpen_r1.setEnabled(checked)
+        self._ui.sld_sharpen_r2.setEnabled(checked)
+        self._ui.sld_sharpen_r3.setEnabled(checked)
+        self._ui.sld_sharpen_r4.setEnabled(checked)
+        self._ui.sld_sharpen_r5.setEnabled(checked)
+        self._ui.sld_sharpen_a1.setEnabled(checked)
+        self._ui.sld_sharpen_a2.setEnabled(checked)
+        self._ui.sld_sharpen_a2.setEnabled(checked) 
+        self._ui.sld_sharpen_a3.setEnabled(checked)
+        self._ui.sld_sharpen_a4.setEnabled(checked)
+        self._ui.sld_sharpen_a5.setEnabled(checked)  
+
+        self._apply_sharpen()
+
+
+    @log
     @pyqtSlot(name="on_btn_stretch_apply_clicked")
     def _apply_autostretch(self):
         """
@@ -269,6 +328,19 @@ class MainWindow(QMainWindow):
         update_params_from_controls(self._rgb_parameters, self._rgb_controls)
 
         self._controller.apply_processing()
+
+    @log
+    @pyqtSlot(name="on_btn_sharpen_apply_clicked")
+    def _apply_sharpen(self):
+        """
+        Apply sharpen processing
+        """
+        update_params_from_controls(self._sharpening_controls_parameters, self._sharpening_controls)
+
+        self._controller.apply_processing()
+
+
+    
 
     @log
     @pyqtSlot(name="on_btn_levels_apply_clicked")
@@ -297,6 +369,16 @@ class MainWindow(QMainWindow):
         reset_params(self._rgb_parameters, self._rgb_controls)
 
     @log
+    @pyqtSlot(name="on_btn_sharpen_reset_clicked")
+    def _reset_sharpen(self):
+        """
+        Resets Sharpen controls to their defaults
+        """
+        reset_params(self._sharpening_controls_parameters, self._sharpening_controls)
+
+
+
+    @log
     @pyqtSlot(name="on_btn_levels_reset_clicked")
     def _reset_levels(self):
         """
@@ -311,6 +393,16 @@ class MainWindow(QMainWindow):
         Sets rgb controls to their previously recorded values (last apply)
         """
         update_controls_from_params(self._rgb_parameters, self._rgb_controls)
+
+
+    @log
+    @pyqtSlot(name="on_btn_sharpen_reload_clicked")
+    def _reload_sharpen(self):
+        """
+        Sets rgb controls to their previously recorded values (last apply)
+        """
+        update_controls_from_params(self._sharpening_controls_parameters, self._sharpening_controls)
+
 
     @log
     @pyqtSlot(name="on_btn_stretch_reload_clicked")
@@ -476,6 +568,16 @@ class MainWindow(QMainWindow):
         :type checked: bool
         """
         self._controller.set_save_every_image(checked)
+
+    @log
+    def on_chk_process_existing_toggled(self, checked: bool):
+        """
+        Qt slot executed when 'Process exsting ' check box is changed
+
+        :param checked: is checkbox checked ?
+        :type checked: bool
+        """
+        self._controller.set_process_existing(checked)
 
     @pyqtSlot()
     @log

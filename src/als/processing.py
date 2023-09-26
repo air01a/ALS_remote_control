@@ -730,3 +730,288 @@ class Pipeline(QueueConsumer):
         :type process: ImageProcessor
         """
         self._processes.append(process)
+
+
+class Wavelet(ImageProcessor):
+    """
+    Implements color balance processing
+    """
+
+    @log
+    def __init__(self):
+
+        super().__init__()
+
+        self._parameters.append(
+            SwitchParameter(
+                "active",
+                I18n.TOOLTIP_RGB_ACTIVE,
+                default=True
+            )
+        )
+
+        self._parameters.append(
+            RangeParameter(
+                "wlt_radius1",
+                I18n.TOOLTIP_RED_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=5
+            )
+        )
+
+        self._parameters.append(
+            RangeParameter(
+                "wlt_amount1",
+                I18n.TOOLTIP_GREEN_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=80
+            )
+        )
+        self._parameters.append(
+            RangeParameter(
+                "wlt_radius2",
+                I18n.TOOLTIP_RED_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=5
+            )
+        )
+
+        self._parameters.append(
+            RangeParameter(
+                "wlt_amount2",
+                I18n.TOOLTIP_GREEN_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=80
+            )
+        )
+        self._parameters.append(
+            RangeParameter(
+                "wlt_radius3",
+                I18n.TOOLTIP_RED_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=5
+            )
+        )
+
+        self._parameters.append(
+            RangeParameter(
+                "wlt_amount3",
+                I18n.TOOLTIP_GREEN_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=80
+            )
+        ) 
+        self._parameters.append(
+            RangeParameter(
+                "wlt_radius4",
+                I18n.TOOLTIP_RED_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=5
+            )
+        )
+
+        self._parameters.append(
+            RangeParameter(
+                "wlt_amount4",
+                I18n.TOOLTIP_GREEN_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=80
+            )
+        )
+
+        self._parameters.append(
+            RangeParameter(
+                "wlt_radius5",
+                I18n.TOOLTIP_RED_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=5
+            )
+        )
+
+        self._parameters.append(
+            RangeParameter(
+                "wlt_amount5",
+                I18n.TOOLTIP_GREEN_LEVEL,
+                default=1,
+                minimum=0,
+                maximum=80
+            )
+        ) 
+
+
+    def wavelet_sharpen(self, input_image, amount, radius):
+        """
+        Sharpen a B/W or color image with wavelets. The underlying algorithm was taken from the
+        Gimp wavelet plugin, originally written in C and published under the GPLv2+ license at:
+        https://github.com/mrossini-ethz/gimp-wavelet-sharpen/blob/master/src/wavelet.c
+
+        :param input_image: Input image (B/W or color), type uint16
+        :param amount: Amount of sharpening
+        :param radius: Radius in pixels
+        :return: Sharpened image, same format as input image
+        """
+
+        height, width = input_image.shape[:2]
+        color = len(input_image.shape) == 3
+
+        # Allocate workspace: Three complete images, plus 1D object with length max(row, column).
+        if color:
+            fimg = np.empty((3, height, width, 3), dtype=np.float32)
+            temp = np.zeros((max(width, height), 3), dtype=np.float32)
+        else:
+            fimg = np.empty((3, height, width), dtype=np.float32)
+            temp = np.zeros(max(width, height), dtype=np.float32)
+
+        # Convert input image to floats.
+        fimg[0] = input_image / 65535
+
+        # Start with level 0. Store its Laplacian on level 1. The operator is separated in a
+        # column and a row operator.
+        hpass = 0
+        for lev in range(5):
+            # Highpass and lowpass levels use image indices 1 and 2 in alternating mode to save
+            # space.
+            lpass = ((lev & 1) + 1)
+            if color:
+                for row in range(height):
+                    self.mexican_hat_color(temp, fimg[hpass][row, :, :], width, 1 << lev)
+                    fimg[lpass][row, :, :] = temp[:width, :] * 0.25
+                for col in range(width):
+                    self.mexican_hat_color(temp, fimg[lpass][:, col, :], height, 1 << lev)
+                    fimg[lpass][:, col, :] = temp[:height, :] * 0.25
+            else:
+                for row in range(height):
+                    self.mexican_hat(temp, fimg[hpass][row, :], width, 1 << lev)
+                    fimg[lpass][row, :] = temp[:width] * 0.25
+                for col in range(width):
+                    self.mexican_hat(temp, fimg[lpass][:, col], height, 1 << lev)
+                    fimg[lpass][:, col] = temp[:height] * 0.25
+
+            # Compute the amount of the correction at the current level.
+            amt = amount[lev] * np.exp(-(lev - radius[lev]) * (lev - radius[lev]) / 1.5) + 1.
+
+            fimg[hpass] -= fimg[lpass]
+            fimg[hpass] *= amt
+
+            # Accumulate all corrections in the first workspace image.
+            if hpass:
+                fimg[0] += fimg[hpass]
+
+            hpass = lpass
+
+        # At the end add the coarsest level and convert back to 16bit integer format.
+        fimg[0] = ((fimg[0] + fimg[lpass]) * 65535.).clip(min=0., max=65535.)
+        return fimg[0].astype(np.uint16)
+
+    def mexican_hat(self, temp, base, size, sc):
+        """
+        Apply a 1D strided second derivative to a row or column of a B/W image. Store the result
+        in the temporary workspace "temp".
+
+        :param temp: Workspace (type float32), length at least "size" elements
+        :param base: Input image (B/W), Type float32
+        :param size: Length of image row / column
+        :param sc: Stride (power of 2) of operator
+        :return: -
+        """
+
+        # Special case at begin of row/column. Full operator not applicable.
+        temp[:sc] = 2 * base[:sc] + base[sc:0:-1] + base[sc:2 * sc]
+        # Apply the full operator.
+        temp[sc:size - sc] = 2 * base[sc:size - sc] + base[:size - 2 * sc] + base[2 * sc:size]
+        # Special case at end of row/column. The full operator is not applicable.
+        temp[size - sc:size] = 2 * base[size - sc:size] + base[size - 2 * sc:size - sc] + \
+                               base[size - 2:size - 2 - sc:-1]
+
+
+    def mexican_hat_color(self, temp, base, size, sc):
+        """
+        Apply a 1D strided second derivative to a row or column of a color image. Store the result
+        in the temporary workspace "temp".
+
+        :param temp: Workspace (type float32), length at least "size" elements (first dimension)
+                     times 3 colors (second dimension).
+        :param base: Input image (color), Type float32
+        :param size: Length of image row / column
+        :param sc: Stride (power of 2) of operator
+        :return: -
+        """
+
+        # Special case at begin of row/column. Full operator not applicable.
+        temp[:sc, :] = 2 * base[:sc, :] + base[sc:0:-1, :] + base[sc:2 * sc, :]
+        # Apply the full operator.
+        temp[sc:size - sc, :] = 2 * base[sc:size - sc, :] + base[:size - 2 * sc, :] + base[
+                                2 * sc:size, :]
+        # Special case at end of row/column. The full operator is not applicable.
+        temp[size - sc:size, :] = 2 * base[size - sc:size, :] + base[size - 2 * sc:size - sc, :] + \
+                                  base[size - 2:size - 2 - sc:-1, :]
+
+
+
+    @log
+    def process_image(self, image: Image):
+        """
+        Performs RGB balance
+
+        :param image: the image to process
+        :type image: Image
+        """
+        active = self._parameters[0]
+        r1 = self._parameters[1].value
+        a1 = self._parameters[2].value
+        r2 = self._parameters[3].value
+        a2 = self._parameters[4].value
+        r3 = self._parameters[5].value
+        a3 = self._parameters[6].value
+        r4 = self._parameters[7].value
+        a4 = self._parameters[8].value
+        r5 = self._parameters[9].value
+        a5 = self._parameters[10].value
+
+
+        for param in self._parameters:
+            _LOGGER.info(f"Wavelet param {param.name} = {param.value}")
+
+        if active.value:
+            '''
+            radius = r2.value
+            amount = a2.value
+
+            if image.is_color():
+                image.set_color_axis_as(2)
+
+            # Translate the kernel radius into standard deviation.
+            sigma = radius / 3
+
+            # Convert the image to floating point format.
+            image_tmp = image.data.astype(np.float32)
+
+
+            #for index, layer in enumerate(image_tmp):
+            #    image_blurred = cv2.GaussianBlur(image_tmp[index], (0, 0), sigma, borderType=cv2.BORDER_DEFAULT)
+            #    image.data[index] = (layer + amount * (layer - image_blurred)).clip(min=0., max=65535.).astype(np.uint16)
+            image_blurred = cv2.GaussianBlur(image_tmp, (0, 0), sigma, borderType=cv2.BORDER_DEFAULT)
+            image.data = (image.data + amount * (image.data - image_blurred)).clip(min=0., max=65535.).astype(np.uint16)
+            '''
+
+            radius = [r1,r2,r3,r4,r5]
+            amount = [a1,a2,a3,a4,a5]
+
+            if image.is_color():
+                image.set_color_axis_as(2)
+            
+
+            image.data = self.wavelet_sharpen(image.data, amount, radius)
+            if image.is_color():
+                image.set_color_axis_as(0)
+
+        return image

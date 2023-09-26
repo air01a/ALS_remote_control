@@ -116,7 +116,7 @@ class FolderScanner(FileSystemEventHandler, InputScanner, QObject):
         self._observer = None
 
     @log
-    def start(self):
+    def start(self, process_existing):
         """
         Starts scanning scan folder for new files
         """
@@ -125,6 +125,11 @@ class FolderScanner(FileSystemEventHandler, InputScanner, QObject):
             self._observer = PollingObserver()
             self._observer.schedule(self, scan_folder_path, recursive=True)
             self._observer.start()
+
+            if process_existing:
+                p = Path(scan_folder_path).glob('*') #**/*')
+                [self.broadcast_image_path(str(x)) for x in p if x.is_file()]
+
         except OSError as os_error:
             raise ScannerStartError(os_error)
 
@@ -150,6 +155,7 @@ class FolderScanner(FileSystemEventHandler, InputScanner, QObject):
             image_path = event.src_path
             _LOGGER.debug(f"File creation detected : {image_path}")
             self.broadcast_image_path(image_path)
+            _LOGGER.info(image_path)
 
 
 @log

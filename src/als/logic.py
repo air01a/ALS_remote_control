@@ -41,7 +41,7 @@ from als.model.data import (
 )
 from als.model.params import ProcessingParameter
 from als.processing import Pipeline, Debayer, Standardize, ConvertForOutput, Levels, ColorBalance, AutoStretch, \
-    HotPixelRemover, RemoveDark, FileReader, HistogramComputer, QImageGenerator
+    HotPixelRemover, RemoveDark, FileReader, HistogramComputer, QImageGenerator, Wavelet
 from als.stack import Stacker
 
 _LOGGER = AlsLogAdapter(getLogger(__name__), {})
@@ -86,7 +86,7 @@ class Controller:
         DYNAMIC_DATA.session.set_status(Session.stopped)
         DYNAMIC_DATA.web_server_is_running = False
         self._save_every_image = False
-
+        self._process_existing = False
         DYNAMIC_DATA.pre_processor_busy = False
         DYNAMIC_DATA.stacker_busy = False
         DYNAMIC_DATA.post_processor_busy = False
@@ -121,9 +121,11 @@ class Controller:
         self._rgb_processor = ColorBalance()
         self._autostretch_processor = AutoStretch()
         self._levels_processor = Levels()
+        self._wavelet = Wavelet()
         self._post_process_pipeline.add_process(self._autostretch_processor)
         self._post_process_pipeline.add_process(self._levels_processor)
         self._post_process_pipeline.add_process(self._rgb_processor)
+        self._post_process_pipeline.add_process(self._wavelet)
         self._post_process_pipeline.start(self._profile.get_post_process_priority)
 
         self._saver_queue = DYNAMIC_DATA.save_queue
@@ -207,7 +209,7 @@ class Controller:
     @log
     def cb_save_image(self,var):
         _LOGGER.debug(f"Remote save image")
-        self.save_post_process_result(self, final=True)
+        self.save_post_process_result(final=True)
         return 0    
 
     @log
@@ -240,6 +242,11 @@ class Controller:
         :return: rgb parameters
         """
         return self._rgb_processor.get_parameters()
+    
+
+    @log
+    def get_sharpening_controls_parameters(self) ->List[ProcessingParameter]:
+        return self._wavelet.get_parameters()
 
     @log
     def get_levels_parameters(self) -> List[ProcessingParameter]:
@@ -302,6 +309,16 @@ class Controller:
         return self._save_every_image
 
     @log
+    def get_process_existing(self) -> bool:
+        """
+        Retrieves the flag that tells if we need to process existing image
+
+        :return: the flag that tells if we need to process existing image
+        :rtype: bool
+        """
+        return self._process_existing
+
+    @log
     def set_save_every_image(self, save_every_image: bool):
         """
         Sets the flag that tells if we need to save every process result image
@@ -310,6 +327,18 @@ class Controller:
         :type save_every_image: bool
         """
         self._save_every_image = save_every_image
+
+
+    @log
+    def set_process_existing(self, process_existing: bool):
+        """
+        Sets the flag that tells if we need to process existing image
+
+        :param process_existing: flag that tells if we need to process existing image
+        :type process_existing: bool
+        """
+        self._process_existing = process_existing
+
 
     @log
     def get_align_before_stack(self) -> bool:
@@ -573,7 +602,7 @@ class Controller:
 
             # start input scanner
             try:
-                self._input_scanner.start()
+                self._input_scanner.start(self._process_existing)
                 MESSAGE_HUB.dispatch_info(__name__, QT_TRANSLATE_NOOP("", "Input scanner started"))
             except ScannerStartError as scanner_start_error:
                 raise SessionError("Input scanner could not start", scanner_start_error)

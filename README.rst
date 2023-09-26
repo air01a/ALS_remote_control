@@ -9,6 +9,11 @@ I had many troubles to make the python script work with recent version of OS (li
 So I started to work on this problems. I also wanted to be able to pilot ALS from a external script (mainly for start/stop session) to 
 automatize workflow with N.I.N.A, so I implemented a socket command and a small client. 
 
+I also added Wavelet sharpness tool and the possibility to scan existing image on folder when the session start. 
+.. image:: als-screenshot2.png
+   :align: center
+
+
 As soon as I have time, I will merge this repo with the main ALS repo, but there is quite some problems with the CI to solve before that.
 
 INITIAL

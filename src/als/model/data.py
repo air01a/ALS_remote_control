@@ -95,6 +95,7 @@ class I18n(QObject):
         I18n.TOOLTIP_RGB_ACTIVE = self.tr("RGB balance active")
         I18n.TOOLTIP_STRETCH_ACTIVE = self.tr("Autostretch active")
         I18n.TOOLTIP_LEVELS_ACTIVE = self.tr("Levels active")
+        I18n.TOOLTIP_SHARPENING_ACTIVE = self.tr("Sharpening active")
         I18n.STACK_SIZE = self.tr("stack size")
         I18n.SESSION = self.tr("Session")
 

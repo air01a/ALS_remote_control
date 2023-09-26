@@ -166,6 +166,10 @@
             </property>
            </widget>
           </item>
+
+          
+
+
           <item>
            <widget class="QPushButton" name="pbPause">
             <property name="enabled">
@@ -249,6 +253,26 @@
           </item>
          </layout>
         </item>
+   
+      <item>
+         <widget class="QCheckBox" name="chk_process_existing">
+         
+         <property name="toolTip">
+         <string>Process existing pictures</string>
+         </property>
+         <property name="layoutDirection">
+         <enum>Qt::LeftToRight</enum>
+         </property>
+         <property name="text">
+         <string>Process existing pictures</string>
+         </property>
+         </widget>
+      </item>
+
+
+
+
+
         <item>
          <widget class="QLabel" name="lbl_session_status">
           <property name="font">
@@ -853,7 +877,7 @@
    <property name="minimumSize">
     <size>
      <width>330</width>
-     <height>708</height>
+     <height>400</height>
     </size>
    </property>
    <property name="allowedAreas">
@@ -865,6 +889,7 @@
    <attribute name="dockWidgetArea">
     <number>2</number>
    </attribute>
+   <widget class="QScrollArea">
    <widget class="QWidget" name="dockWidgetContents_3">
     <layout class="QVBoxLayout" name="verticalLayout_9">
      <item>
@@ -1170,6 +1195,240 @@
       </widget>
      </item>
      <item>
+
+
+    <widget class="QGroupBox" name="sharpenProcessBox">
+       <property name="title">
+        <string>Sharpening</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_100">
+        <item>
+         <widget class="QCheckBox" name="chk_sharpen_active">
+          <property name="text">
+           <string>Active</string>
+          </property>
+          <property name="checked">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+
+
+        <item>
+         <layout class="QGridLayout" name="gridLayout_100">
+          <item row="0" column="0">
+           <widget class="QLabel" name="label_100">
+            <property name="text">
+             <string>Lev1 Radius</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="Slider" name="sld_sharpen_r1">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="label_101">
+            <property name="text">
+             <string>Lev1 Amount</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="Slider" name="sld_sharpen_a1">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+
+          <item row="2" column="0">
+           <widget class="QLabel" name="label_102">
+            <property name="text">
+             <string>Lev2 Radius</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="Slider" name="sld_sharpen_r2">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+
+          <item row="3" column="0">
+           <widget class="QLabel" name="label_104">
+            <property name="text">
+             <string>Lev2 Amount</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="Slider" name="sld_sharpen_a2">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+
+
+
+          <item row="4" column="0">
+           <widget class="QLabel" name="label_100">
+            <property name="text">
+             <string>Lev3 Radius</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="Slider" name="sld_sharpen_r3">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="0">
+           <widget class="QLabel" name="label_101">
+            <property name="text">
+             <string>Lev3 Amount</string>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="1">
+           <widget class="Slider" name="sld_sharpen_a3">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+
+ 
+          <item row="6" column="0">
+           <widget class="QLabel" name="label_100">
+            <property name="text">
+             <string>Lev4 Radius</string>
+            </property>
+           </widget>
+          </item>
+          <item row="6" column="1">
+           <widget class="Slider" name="sld_sharpen_r4">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+          <item row="7" column="0">
+           <widget class="QLabel" name="label_101">
+            <property name="text">
+             <string>Lev4 Amount</string>
+            </property>
+           </widget>
+          </item>
+          <item row="7" column="1">
+           <widget class="Slider" name="sld_sharpen_a4">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+
+
+
+      
+          <item row="8" column="0">
+           <widget class="QLabel" name="label_100">
+            <property name="text">
+             <string>Lev5 Radius</string>
+            </property>
+           </widget>
+          </item>
+          <item row="8" column="1">
+           <widget class="Slider" name="sld_sharpen_r5">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+          <item row="9" column="0">
+           <widget class="QLabel" name="label_101">
+            <property name="text">
+             <string>Lev5 Amount</string>
+            </property>
+           </widget>
+          </item>
+          <item row="9" column="1">
+           <widget class="Slider" name="sld_sharpen_a5">
+            <property name="maximum">
+             <number>255</number>
+            </property>
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout_102">
+          <item>
+           <widget class="QPushButton" name="btn_sharpen_reset">
+            <property name="text">
+             <string>Reset</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btn_sharpen_reload">
+            <property name="text">
+             <string>Reload</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btn_sharpen_apply">
+            <property name="text">
+             <string>Apply</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
       <spacer name="verticalSpacer_2">
        <property name="orientation">
         <enum>Qt::Vertical</enum>
@@ -1183,6 +1442,7 @@
       </spacer>
      </item>
     </layout>
+   </widget>
    </widget>
   </widget>
   <action name="action_quit">
